@@ -1,0 +1,141 @@
+{
+  "contract_version": "project-refill-project-plan-contract-v7",
+  "project_name": "城市树木病害采样保全台",
+  "project_tier": "standard",
+  "interface_kind": "http_api",
+  "summary": "园林采样员为城市树木建立病害样本保全凭据闭环",
+  "primary_users": [
+    "城市园林病害采样员",
+    "植物检疫实验员",
+    "标本保全复核员"
+  ],
+  "required_features": [
+    "树木保护基线建档并登记采样批次",
+    "按物种与保护约束校验采样目标和数量",
+    "样本标签、容器和来源链完整性质检",
+    "异常批次生成补采任务并支持整改复核关闭",
+    "冻结合格采样证据并签发保全凭据",
+    "凭据验真并记录查询审计"
+  ],
+  "interfaces": [
+    "版本化 JSON HTTP API：POST /v1/trees、POST /v1/trees/{treeID}/batches、POST /v1/batches/{batchID}/inspection、POST /v1/batches/{batchID}/resampling/resolve、POST /v1/batches/{batchID}/freeze、GET /v1/credentials/{credentialID}/verify、GET /healthz、GET /selfcheck。支持 -addr=127.0.0.1:<port> 或 PORT 环境变量；默认监听 127.0.0.1:19081，仅绑定回环地址。",
+    "项目根目录提供简体中文 README.md，说明用途以及标准构建、运行和测试方式。"
+  ],
+  "workflows": [
+    "采样员为城市树木建立保护基线并登记病害采样批次，服务校验目标后进入待质检；实验员提交样本证据，异常则生成补采任务并由复核员关闭；全部通过后冻结证据、签发保全凭据，任何用户均可查询验真并留下审计记录。"
+  ],
+  "diversity_signature": {
+    "domain": "城市树木病害采样与标本保全",
+    "workflow": "树木建档→病害采样登记→样本质检→异常补采复核→证据冻结→凭据签发验真",
+    "interface": "版本化 JSON HTTP API，真实回环监听与有界自检",
+    "concurrency": "按采样批次串行写入，expectedVersion 防止陈旧修改，idempotencyKey 保证重试幂等",
+    "persistence": "本地 SQLite WAL 保存树木档案、采样批次、质检、补采、冻结凭据和审计事件",
+    "integration": "无外部系统，证据、规则和凭据验真均在本地完成"
+  },
+  "implementation": {
+    "architecture": "分层单体结构：HTTP handler 层负责 JSON 请求校验与响应，application 层编排单条采样保全流程、事务和幂等，domain 层维护实体状态机与采样质量规则，repository 层实现 SQLite 事务、迁移和审计持久化。依赖方向为 internal/httpapi → internal/application → internal/domain 与 internal/repository；internal/selfcheck 通过 HTTP 调用 application 所提供服务。启动时执行 schema、WAL 和数据完整性检查。生产实现拆分为至少 20 个 Go 文件，总体约 2040 行。",
+    "data_entities": [
+      {
+        "name": "TreeRecord",
+        "purpose": "记录城市树木的物种、位置和采样保护约束基线。",
+        "fields": ["treeID", "species", "locationDescription", "protectedStatus", "baselineVersion", "createdAt", "updatedAt"]
+      },
+      {
+        "name": "SamplingBatch",
+        "purpose": "描述一次病害采样的人员、目标和质量治理状态。",
+        "fields": ["batchID", "treeID", "collector", "collectedAt", "targetTissues", "targetQuantity", "expectedVersion", "status", "createdAt"]
+      },
+      {
+        "name": "SampleInspection",
+        "purpose": "保存样本标签、数量、容器和来源链质检事实。",
+        "fields": ["sampleID", "batchID", "label", "quantity", "containerCondition", "chainNotes", "qualityStatus", "reviewNote", "recordedAt"]
+      },
+      {
+        "name": "ResamplingTask",
+        "purpose": "跟踪质量异常触发的补采整改与独立复核。",
+        "fields": ["taskID", "batchID", "reason", "requiredActions", "assignedTo", "status", "resolvedAt"]
+      },
+      {
+        "name": "PreservationFreeze",
+        "purpose": "冻结通过复核的采样证据并关联凭据。",
+        "fields": ["freezeID", "batchID", "evidenceDigest", "frozenBy", "frozenAt", "credentialID"]
+      },
+      {
+        "name": "SpecimenCredential",
+        "purpose": "签发可验真的标本保全凭据，证明冻结证据未被篡改。",
+        "fields": ["credentialID", "batchID", "issuedAt", "issuer", "payloadDigest", "status"]
+      }
+    ],
+    "modules": [
+      {
+        "package_path": "internal/httpapi",
+        "responsibility": "HTTP 传输适配、路由注册、请求 DTO 和稳定错误响应。",
+        "required_behaviors": ["提供树木、采样批次、样本质检、补采复核、冻结和凭据验真的 JSON 路由", "提供 /healthz 与 /selfcheck，并校验路径参数、请求体和幂等请求头"],
+        "dependencies": ["internal/application"],
+        "target_go_lines": 360
+      },
+      {
+        "package_path": "internal/application",
+        "responsibility": "端到端用例编排、事务边界、版本控制和幂等命令处理。",
+        "required_behaviors": ["编排建档、采样登记、质检、补采复核、冻结和凭据验真", "执行 expectedVersion 与 idempotencyKey 校验并写入顺序审计事件"],
+        "dependencies": ["internal/domain", "internal/repository"],
+        "target_go_lines": 430
+      },
+      {
+        "package_path": "internal/domain",
+        "responsibility": "纯业务模型、状态转换、采样约束、质量判定和凭据规则。",
+        "required_behaviors": ["定义 TreeRecord、SamplingBatch 及相关状态机和领域错误", "计算规范化证据摘要、生成冻结清单并验证凭据有效性"],
+        "dependencies": [],
+        "target_go_lines": 520
+      },
+      {
+        "package_path": "internal/repository",
+        "responsibility": "SQLite schema、WAL、迁移、事务读写和恢复检查。",
+        "required_behaviors": ["创建索引并提供聚合、质检、补采和凭据的事务化读写", "持久化幂等响应、连续审计事件和冻结记录，启动时校验并恢复"],
+        "dependencies": ["internal/domain"],
+        "target_go_lines": 470
+      },
+      {
+        "package_path": "internal/selfcheck",
+        "responsibility": "真实回环监听上的有界端到端自检程序。",
+        "required_behaviors": ["使用 -addr 或 PORT 配置启动临时 HTTP 服务并调用全部公开流程端点", "断言异常补采、版本冲突、冻结和凭据验真结果后退出"],
+        "dependencies": ["internal/application", "internal/httpapi"],
+        "target_go_lines": 260
+      }
+    ],
+    "runtime_flows": [
+      {
+        "name": "树木建档与采样登记",
+        "entrypoint": "POST /v1/trees → POST /v1/trees/{treeID}/batches",
+        "steps": ["handler 校验树木物种、位置和保护状态，application 创建 TreeRecord。", "调用批次登记端点，application 根据保护基线登记目标组织、数量和采样批次，domain 将状态置为 pending_inspection。", "repository 在事务中提交基线、批次和审计事件，并返回 batchID 与 expectedVersion。"],
+        "module_paths": ["internal/selfcheck", "internal/httpapi", "internal/application", "internal/domain", "internal/repository"],
+        "feature_coverage": [1, 2]
+      },
+      {
+        "name": "样本质检与补采复核",
+        "entrypoint": "POST /v1/batches/{batchID}/inspection",
+        "steps": ["实验员提交样本标签、数量、容器状况和来源链备注，domain 运行完整性规则。", "判定异常时 application 创建 ResamplingTask 并阻断冻结；补采提交后由复核命令按 expectedVersion 关闭任务。", "repository 持久化每次检查、任务状态和顺序审计，重复 idempotencyKey 返回原响应。"],
+        "module_paths": ["internal/httpapi", "internal/application", "internal/domain", "internal/repository"],
+        "feature_coverage": [3, 4]
+      },
+      {
+        "name": "冻结证据并签发凭据",
+        "entrypoint": "POST /v1/batches/{batchID}/freeze",
+        "steps": ["application 检查质检通过且所有补采任务已关闭，domain 生成规范化证据摘要。", "repository 在同一事务写入不可变 PreservationFreeze、SpecimenCredential 和审计事件，并将批次置为 frozen。", "响应返回凭据编号、载荷摘要和验真标识。"],
+        "module_paths": ["internal/httpapi", "internal/application", "internal/domain", "internal/repository"],
+        "feature_coverage": [5]
+      },
+      {
+        "name": "凭据验真",
+        "entrypoint": "GET /v1/credentials/{credentialID}/verify",
+        "steps": ["handler 读取凭据编号并调用 application 查询冻结证据。", "domain 重新计算冻结清单摘要，返回有效、失效或不存在原因。", "application 记录验真审计事件，handler 返回稳定 JSON 结果。"],
+        "module_paths": ["internal/httpapi", "internal/application", "internal/domain", "internal/repository"],
+        "feature_coverage": [6]
+      }
+    ]
+  },
+  "acceptance_commands": [
+    {"argv": ["go", "test", "./..."], "working_directory": "."},
+    {"argv": ["go", "run", "./cmd/biocuration-selfcheck"], "working_directory": "."}
+  ]
+}
