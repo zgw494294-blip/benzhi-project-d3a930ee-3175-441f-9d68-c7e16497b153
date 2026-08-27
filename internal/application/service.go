@@ -93,6 +93,9 @@ func (s *Service) CreateBatch(ctx context.Context, treeID, collector string, col
 	if key != "" {
 		id = "batch-" + key
 		if existing, lookup := s.Store.Batch(ctx, id); lookup == nil {
+			if existing.TreeID != treeID {
+				return existing, &domain.DomainError{Code: domain.ErrIdempotency, Message: "幂等键已用于其他树木"}
+			}
 			return existing, nil
 		}
 	}
