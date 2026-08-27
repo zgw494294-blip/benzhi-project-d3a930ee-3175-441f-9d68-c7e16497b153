@@ -70,10 +70,10 @@ func (s *Store) FreezeTx(ctx context.Context, f domain.PreservationFreeze, c dom
 	if e != nil {
 		return e
 	}
+	if _, e = s.db.ExecContext(ctx, `INSERT INTO freezes VALUES(?,?,?,?,?,?)`, f.FreezeID, f.BatchID, f.EvidenceDigest, f.FrozenBy, iso(f.FrozenAt), f.CredentialID); e != nil {
+		return &domain.DomainError{Code: domain.ErrConflict, Message: fmt.Sprintf("冻结记录冲突: %v", e)}
+	}
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
-		if _, e = tx.ExecContext(ctx, `INSERT INTO freezes VALUES(?,?,?,?,?,?)`, f.FreezeID, f.BatchID, f.EvidenceDigest, f.FrozenBy, iso(f.FrozenAt), f.CredentialID); e != nil {
-			return &domain.DomainError{Code: domain.ErrConflict, Message: fmt.Sprintf("冻结记录冲突: %v", e)}
-		}
 		if _, e = tx.ExecContext(ctx, `INSERT INTO credentials VALUES(?,?,?,?,?,?)`, c.CredentialID, c.BatchID, iso(c.IssuedAt), c.Issuer, c.PayloadDigest, c.Status); e != nil {
 			return &domain.DomainError{Code: domain.ErrConflict, Message: fmt.Sprintf("凭据冲突: %v", e)}
 		}
