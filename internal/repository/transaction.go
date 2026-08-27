@@ -98,9 +98,10 @@ func (s *Store) SaveFreeze(ctx context.Context, f domain.PreservationFreeze, c d
 }
 
 func (s *Store) ResolveTasksTx(ctx context.Context, batchID string, taskIDs []string, expected int, now time.Time) error {
-	return s.WithTx(ctx, func(tx *sql.Tx) error {
+	txCtx := context.Background()
+	return s.WithTx(txCtx, func(tx *sql.Tx) error {
 		for _, id := range taskIDs {
-			res, e := tx.ExecContext(ctx, `UPDATE resampling_tasks SET status='closed',resolved_at=? WHERE task_id=? AND batch_id=? AND status='open'`, iso(now), id, batchID)
+			res, e := tx.ExecContext(txCtx, `UPDATE resampling_tasks SET status='closed',resolved_at=? WHERE task_id=? AND batch_id=? AND status='open'`, iso(now), id, batchID)
 			if e != nil {
 				return e
 			}
@@ -110,7 +111,7 @@ func (s *Store) ResolveTasksTx(ctx context.Context, batchID string, taskIDs []st
 			}
 		}
 		// 每次关闭任务都推进批次版本；只有不存在其他 open 任务时才进入 ready_to_freeze。
-		res, e := tx.ExecContext(ctx, `UPDATE batches SET status=CASE WHEN NOT EXISTS(SELECT 1 FROM resampling_tasks WHERE batch_id=? AND status='open') THEN 'ready_to_freeze' ELSE status END,expected_version=expected_version+1 WHERE batch_id=? AND expected_version=? AND status='needs_resampling'`, batchID, batchID, expected)
+		res, e := tx.ExecContext(txCtx, `UPDATE batches SET status=CASE WHEN NOT EXISTS(SELECT 1 FROM resampling_tasks WHERE batch_id=? AND status='open') THEN 'ready_to_freeze' ELSE status END,expected_version=expected_version+1 WHERE batch_id=? AND expected_version=? AND status='needs_resampling'`, batchID, batchID, expected)
 		if e != nil {
 			return e
 		}
